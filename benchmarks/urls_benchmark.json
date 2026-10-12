@@ -1,0 +1,37 @@
+{
+  "descripcion": "Dataset de benchmark de la FASE 5. 10 URLs reales de organismos bolivianos (5 financiero + 5 tributario), verificadas con GET/HEAD 200 en la fecha indicada. Son portales institucionales raiz: maximizan la reproducibilidad. Antes de una corrida de medicion, revisar que sigan respondiendo y, si se desea contenido normativo mas especifico, reemplazar el path del mismo dominio.",
+  "verificacion": {
+    "fecha": "2026-10-07",
+    "metodo": "curl -I -L, codigo HTTP 200 en todas las URLs",
+    "en_imagen_docker": true,
+    "ruta_dentro_contenedor": "benchmarks/urls_benchmark.json"
+  },
+  "financiero": [
+    "https://www.bcb.gob.bo/",
+    "https://www.asfi.gob.bo/",
+    "https://www.bdp.com.bo/",
+    "https://www.fndr.gob.bo/",
+    "https://www.udape.gob.bo/"
+  ],
+  "financiero_descripcion": [
+    "Banco Central de Bolivia (BCB) - politica monetaria y regulacion del sistema financiero",
+    "Autoridad de Supervision del Sistema Financiero (ASFI) - normativa de banca, seguros y valores",
+    "Banco de Desarrollo Productivo (BDP) - banca publica de desarrollo",
+    "Fondo Nacional de Desarrollo Regional (FNDR) - financiamiento publico regional",
+    "Unidad de Analisis de Politicas Sociales y Economicas (UDAPE) - analisis de finanzas publicas"
+  ],
+  "tributario": [
+    "https://www.impuestos.gob.bo/",
+    "https://www.aduana.gob.bo/",
+    "https://www.gob.bo/",
+    "https://www.presidencia.gob.bo/",
+    "https://www.ine.gob.bo/"
+  ],
+  "tributario_descripcion": [
+    "Servicio de Impuestos Nacionales (SIN) - normativa tributaria",
+    "Aduana Nacional de Bolivia - tributacion aduanera",
+    "Portal del Estado Plurinacional de Bolivia - marco legal general",
+    "Presidencia del Estado - leyes sancionadas y Gaceta Oficial",
+    "Instituto Nacional de Estadistica (INE) - estadisticas fiscales y economicas"
+  ]
+}

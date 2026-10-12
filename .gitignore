@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+pip-wheel-metadata/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+.venv*/
+.python-version
+
+# ---------------------------------------------------------------------------
+# Secretos y variables de entorno
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---------------------------------------------------------------------------
+# Tests / cobertura
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# ---------------------------------------------------------------------------
+# Logs y archivos temporales
+# ---------------------------------------------------------------------------
+logs/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+tmp/
+temp/
+
+# ---------------------------------------------------------------------------
+# Base de datos (volúmenes locales / dumps)
+# ---------------------------------------------------------------------------
+pgdata/
+/*.sql
+*.dump
+*.tar
+
+# Excepcion: los scripts de inicializacion de Postgres si son parte del proyecto
+!docker/postgres/init/*.sql
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+.docker/
+docker-compose.override.yml
+!docker-compose.override.example.yml
+
+# ---------------------------------------------------------------------------
+# IDE / editores
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Sistema operativo
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+# Respaldos locales de benchmarks
+/backups/
+
+# Salida temporal local
+/resultado.txt

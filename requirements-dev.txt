@@ -1,0 +1,17 @@
+# ---------------------------------------------------------------------------
+# Dependencias de desarrollo y pruebas (FASE 2).
+#
+# Instalacion dentro del contenedor del backend:
+#   docker compose exec -T backend python -m pip install -r requirements-dev.txt
+#
+# Ver `scripts/verify_phase2.sh`, que lo hace automaticamente antes de
+# lanzar pytest.
+# ---------------------------------------------------------------------------
+
+-r requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+
+# Graficas del benchmark (FASE 5): solo analisis, no se usa en runtime.
+matplotlib==3.9.4

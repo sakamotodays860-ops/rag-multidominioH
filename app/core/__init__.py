@@ -1,0 +1,1 @@
+"""Nucleo transversal: configuracion y otros concerns comunes."""

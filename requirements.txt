@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Dependencias del proyecto.
+#
+# FASE 1: FastAPI, Uvicorn y configuracion.
+# FASE 2: SQLAlchemy asincrono + asyncpg para consultar `normativa_bancaria`
+#         y la funcion RPC `match_normativa_coleccion`.
+# FASE 3: httpx (cliente HTTP asincrono) para el scraping concurrente y las
+#         llamadas por lotes a la API REST de Gemini.
+#
+# Nota: la limpieza HTML usa `html.parser` de la biblioteca estandar y los
+# embeddings se piden por HTTP con httpx, por lo que no se anade
+# beautifulsoup4 ni el SDK google-genai.
+# ---------------------------------------------------------------------------
+
+# --- Servidor web ---
+fastapi==0.115.6
+
+# --- Servidor ASGI / ejecucion de uvicorn ---
+uvicorn[standard]==0.34.0
+
+# --- Validacion y configuracion ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# --- Acceso a datos (FASE 2) ---
+# SQLAlchemy 2.x en su estilo asincrono; asyncpg es el driver asyncpg indicado
+# en DATABASE_URL (postgresql+asyncpg://...).
+sqlalchemy[asyncio]==2.1.3
+asyncpg==0.31.0
+greenlet==3.5.6
+
+# --- Cliente HTTP asincrono (FASE 3: scraping + Gemini) ---
+httpx==0.28.1
