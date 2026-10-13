@@ -6,8 +6,9 @@ clientes de Gemini (embeddings de la pregunta y generacion) estan simulados,
 de modo que ninguna llamada saliente depende del exterior.
 
 La premisa de la FASE 2: con el vector del dominio financiero despegado (eje
-0) o el tributario (eje 1), la RPC devuelve SOLO filas de la coleccion pedida
-(fragmentos 4 + 4 de los seeds; el total 8 queda intacto).
+0) o el tributario (eje 1), la RPC devuelve SOLO filas de la coleccion pedida.
+Desde la FASE 6 las colecciones pueden tener ademas documentos reales, por lo
+que se exige al menos el tamano semilla y que no haya contaminacion cruzada.
 """
 
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from contextlib import asynccontextmanager
 from helpers import (
     COLECCION_FINANCIERO,
     COLECCION_TRIBUTARIO,
+    FRAGMENTOS_ESPERADOS,
     vector_financiero,
     vector_tributario,
 )
@@ -61,7 +63,7 @@ async def test_consulta_financiero_devuelve_solo_financiero(sesion):
         abrir=lambda: usar_sesion(sesion),
     )
 
-    assert resultado.total_evidencias == 4
+    assert resultado.total_evidencias >= FRAGMENTOS_ESPERADOS
     assert resultado.coleccion_id == COLECCION_FINANCIERO
     assert {e.coleccion_id for e in resultado.evidencias} == {COLECCION_FINANCIERO}
     assert resultado.respuesta.startswith("OK")
@@ -79,7 +81,7 @@ async def test_consulta_tributario_devuelve_solo_tributario(sesion):
         abrir=lambda: usar_sesion(sesion),
     )
 
-    assert resultado.total_evidencias == 4
+    assert resultado.total_evidencias >= FRAGMENTOS_ESPERADOS
     assert {e.coleccion_id for e in resultado.evidencias} == {COLECCION_TRIBUTARIO}
     assert resultado.respuesta.startswith("OK")
 

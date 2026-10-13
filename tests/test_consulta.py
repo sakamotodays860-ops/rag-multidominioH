@@ -34,7 +34,11 @@ from app.services.consulta import (
     ejecutar_consulta,
 )
 from app.services.embeddings import ErrorEmbeddings
-from app.services.generacion import ClienteGeneracionGemini, ErrorGeneracion
+from app.services.generacion import (
+    ClienteGeneracionGemini,
+    ErrorGeneracion,
+    ErrorProveedorNoDisponible,
+)
 from helpers import (
     COLECCION_FINANCIERO,
     COLECCION_TRIBUTARIO,
@@ -427,10 +431,25 @@ async def test_endpoint_traduccion_a_codigos_http(monkeypatch):
         (httpx.TimeoutException("lento"), fastapi.status.HTTP_502_BAD_GATEWAY),
     ]
     for excepcion, codigo in casos:
-        async def defecto(peticion_interna, fallo=excepcion):
+        async def defecto(peticion_interna, fallo=excepcion, **_kwargs):
             raise fallo
 
         monkeypatch.setattr(api_consulta, "ejecutar_consulta", defecto)
         with pytest.raises(fastapi.HTTPException) as error:
             await consultar(base)
         assert error.value.status_code == codigo, excepcion
+
+
+async def test_endpoint_proveedor_no_disponible_devuelve_503(monkeypatch):
+    import fastapi
+
+    async def defecto(peticion_interna, **_kwargs):
+        raise ErrorProveedorNoDisponible(
+            "El proveedor de generacion (Gemini) no esta disponible (HTTP 503)."
+        )
+
+    monkeypatch.setattr(api_consulta, "ejecutar_consulta", defecto)
+    with pytest.raises(fastapi.HTTPException) as error:
+        await consultar(await peticion_valida())
+    assert error.value.status_code == fastapi.status.HTTP_503_SERVICE_UNAVAILABLE
+    assert "no disponible" in error.value.detail

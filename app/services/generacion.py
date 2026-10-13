@@ -14,6 +14,7 @@ Se reutilizan, importados de ``embeddings.py`` sin modificar ese módulo:
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from dataclasses import dataclass
 
@@ -22,18 +23,34 @@ import httpx
 from app.services.embeddings import (
     _ReintentarReintentable,
     _RETRIABLES,
+    _es_cuota_diaria,
     _es_limitacion_respuesta,
     _retry_after,
 )
+
+logger = logging.getLogger(__name__)
 
 _URL_GENERAR = (
     "https://generativelanguage.googleapis.com/"
     "v1beta/models/{modelo}:generateContent"
 )
 
+# Errores de servidor (proveedor) que, si persisten tras los reintentos, se
+# reportan como "proveedor no disponible" en lugar de un fallo generico.
+_CODIGOS_NO_DISPONIBLE = frozenset({500, 502, 503, 504})
+
 
 class ErrorGeneracion(RuntimeError):
     """Fallo definitivo de la generacion de la respuesta (sin mas reintentos)."""
+
+
+class ErrorProveedorNoDisponible(ErrorGeneracion):
+    """El proveedor de generacion (Gemini) no esta disponible (5xx persistente).
+
+    Subclase de :class:`ErrorGeneracion` para que las capas que solo distinguen
+    "fallo de generacion" sigan funcionando; la capa HTTP la traduce a un
+    ``503 Service Unavailable`` con un mensaje claro de reintento.
+    """
 
 
 @dataclass
@@ -53,6 +70,12 @@ class ClienteGeneracionGemini:
     backoff_base_s: float = 1.0
     backoff_max_s: float = 30.0
     timeout_s: float = 60.0
+    # Modelo alternativo OPCIONAL. Si se configura y el principal agota sus
+    # reintentos con un 5xx (``ErrorProveedorNoDisponible``), se intenta UNA vez
+    # contra este modelo, siguiendo la recomendacion oficial de Gemini para
+    # errores 503 ("cambiar temporalmente a otro modelo"). Por defecto vacio:
+    # no cambia el comportamiento actual ni consume cuota extra.
+    modelo_respaldo: str | None = None
 
     # ------------------------------------------------------------------
     # API publica
@@ -74,7 +97,23 @@ class ClienteGeneracionGemini:
         propio = cliente is None
         cliente = cliente or httpx.AsyncClient(timeout=self.timeout_s)
         try:
-            return await self._generar_con_reintentos(cliente, prompt)
+            try:
+                return await self._generar_con_reintentos(cliente, prompt)
+            except ErrorProveedorNoDisponible as error:
+                # Recomendacion oficial de Gemini para 503: intentar con otro
+                # modelo. Solo si hay respaldo configurado y distinto del actual.
+                if not self.modelo_respaldo or self.modelo_respaldo == self.modelo:
+                    raise
+                logger.warning(
+                    "Modelo %s no disponible; se reintenta una vez con el "
+                    "modelo de respaldo %s. Causa: %s",
+                    self.modelo,
+                    self.modelo_respaldo,
+                    error,
+                )
+                return await self._generar_con_reintentos(
+                    cliente, prompt, modelo=self.modelo_respaldo
+                )
         finally:
             if propio:
                 await cliente.aclose()
@@ -84,20 +123,43 @@ class ClienteGeneracionGemini:
     # ------------------------------------------------------------------
 
     async def _generar_con_reintentos(
-        self, cliente: httpx.AsyncClient, prompt: str
+        self, cliente: httpx.AsyncClient, prompt: str, modelo: str | None = None
     ) -> str:
         """Reintenta la llamada hasta agotar ``max_reintentos``."""
+        modelo_efectivo = modelo or self.modelo
         ultimo_error: BaseException | None = None
         for intento in range(1, self.max_reintentos + 1):
             try:
-                return await self._generar_intento(cliente, prompt)
+                return await self._generar_intento(cliente, prompt, modelo_efectivo)
             except _ReintentarReintentable as error:
                 ultimo_error = error
                 if intento >= self.max_reintentos:
                     break
                 espera = self._calcular_espera(error, intento)
                 await asyncio.sleep(espera)
-        url_referencia = _URL_GENERAR.format(modelo=self.modelo)
+        url_referencia = _URL_GENERAR.format(modelo=modelo_efectivo)
+        # 5xx persistente: el proveedor no esta disponible -> error propio y
+        # claro (la capa HTTP lo traduce a 503). No se oculta la causa original.
+        if (
+            isinstance(ultimo_error, _ReintentarReintentable)
+            and ultimo_error.status_code in _CODIGOS_NO_DISPONIBLE
+        ):
+            # Se registra el cuerpo real informado por Gemini: sin esto no era
+            # posible saber si el 503 era sobrecarga, cuota o proyecto.
+            logger.warning(
+                "Proveedor de generacion no disponible (HTTP %s) con el modelo "
+                "%s tras %d intentos. Respuesta del proveedor: %s",
+                ultimo_error.status_code,
+                modelo_efectivo,
+                self.max_reintentos,
+                str(ultimo_error)[:500],
+            )
+            raise ErrorProveedorNoDisponible(
+                "El proveedor de generacion (Gemini) no esta disponible "
+                f"temporalmente (HTTP {ultimo_error.status_code}) tras "
+                f"{self.max_reintentos} intentos con el modelo {modelo_efectivo}. "
+                "Intenta de nuevo mas tarde."
+            ) from ultimo_error
         raise ErrorGeneracion(
             f"Gemini no respondio tras {self.max_reintentos} intentos "
             f"({url_referencia}): {ultimo_error}"
@@ -114,15 +176,16 @@ class ClienteGeneracionGemini:
         return min(exponencial + jitter, self.backoff_max_s)
 
     async def _generar_intento(
-        self, cliente: httpx.AsyncClient, prompt: str
+        self, cliente: httpx.AsyncClient, prompt: str, modelo: str | None = None
     ) -> str:
         """Una sola llamada a ``generateContent`` (sin reintentos)."""
+        modelo_efectivo = modelo or self.modelo
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": self.temperatura},
         }
         respuesta = await cliente.post(
-            _URL_GENERAR.format(modelo=self.modelo),
+            _URL_GENERAR.format(modelo=modelo_efectivo),
             json=payload,
             headers={
                 "Content-Type": "application/json",
@@ -131,10 +194,19 @@ class ClienteGeneracionGemini:
         )
         cuerpo = respuesta.text
 
+        # Cuota diaria agotada: reintentar no ayuda y consume mas cuota. Se
+        # falla de inmediato con un error definitivo y comprensible.
+        if _es_cuota_diaria(cuerpo):
+            raise ErrorGeneracion(
+                "La cuota diaria de Gemini esta agotada; no se reintenta. "
+                f"Detalle: {cuerpo[:200]}"
+            )
+
         if respuesta.status_code in _RETRIABLES or _es_limitacion_respuesta(cuerpo):
             raise _ReintentarReintentable(
                 f"HTTP {respuesta.status_code}: {cuerpo[:200]}",
                 _retry_after(respuesta),
+                respuesta.status_code,
             )
         if respuesta.status_code != 200:
             raise ErrorGeneracion(

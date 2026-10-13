@@ -6,8 +6,10 @@ verifican los comportamientos del enunciado:
 * el modelo solicitado es exactamente `models/gemini-embedding-001`;
 * se pide `outputDimensionality: 768` (compatibilidad VECTOR(768));
 * las llamadas son POR LOTES (`:batchEmbedContents`), no una por chunk;
-* ante 429 / RESOURCE_EXHAUSTED se reintenta un numero FINITO de veces con
-  backoff progresivo y limite superior (`Retry-After` respetado);
+* 429 / RESOURCE_EXHAUSTED / cuota diaria detienen la generacion SIN
+  reintentos (proteccion de cuota);
+* 500/502/503/504 conservan reintentos finitos con backoff progresivo y
+  limite superior (`Retry-After` respetado);
 * los errores definitivos elevan :class:`ErrorEmbeddings`.
 """
 
@@ -130,32 +132,94 @@ async def test_se_respeta_el_tamano_de_lote():
     assert len(vectores) == 250
 
 
-# --- 429 / RESOURCE_EXHAUSTED ------------------------------------------------
+# --- límite de cuota: SIN reintentos (protección de cuota) -------------------
 
 
-async def test_429_reintenta_y_exitoso(sans_dormir):
+async def test_429_genera_una_sola_llamada(sans_dormir):
+    """HTTP 429 detiene de inmediato: un único intento, sin backoff."""
     transporte = _Transporte(
         [
             httpx.Response(429, text="RESOURCE_EXHAUSTED"),
             _exito,
         ]
     )
+    cliente = _cliente_api(max_reintentos=5)
+
+    with pytest.raises(ErrorEmbeddings, match="429"):
+        await _generar(transporte, ["hola"], cliente)
+
+    assert len(transporte.llamadas) == 1, "429 -> una sola llamada, sin reintentos"
+    assert sans_dormir == [], "no debe esperar: no se reintenta"
+
+
+async def test_resource_exhausted_en_cuerpo_200_sin_reintentar(sans_dormir):
+    """RESOURCE_EXHAUSTED en el cuerpo de un HTTP 200 tampoco se reintenta."""
+    transporte = _Transporte(
+        [
+            httpx.Response(
+                200,
+                json={"error": {"code": 429, "message": "RESOURCE_EXHAUSTED"}},
+            ),
+            _exito,
+        ]
+    )
+    cliente = _cliente_api(max_reintentos=3)
+
+    with pytest.raises(ErrorEmbeddings, match="RESOURCE_EXHAUSTED"):
+        await _generar(transporte, ["hola"], cliente)
+
+    assert len(transporte.llamadas) == 1, "no debe reintentar RESOURCE_EXHAUSTED"
+    assert sans_dormir == [], "no debe esperar tras un límite de cuota"
+
+
+async def test_429_detiene_lotes_posteriores(sans_dormir):
+    """Un 429 en un lote detiene el proceso: no se envían los lotes siguientes."""
+    transporte = _Transporte([_exito, httpx.Response(429, text="RESOURCE_EXHAUSTED")])
+    cliente = _cliente_api(batch_size=1, max_reintentos=5)
+
+    with pytest.raises(ErrorEmbeddings):
+        await _generar(transporte, ["a", "b"], cliente)
+
+    # Lote 1 (200) + lote 2 (429) = 2 llamadas; nunca un tercer lote.
+    assert len(transporte.llamadas) == 2
+    assert sans_dormir == []
+
+
+async def test_mensaje_de_cuota_conserva_la_causa():
+    """El error definitivo no oculta el status ni el cuerpo originales."""
+    transporte = _Transporte([httpx.Response(429, text="rate limit exceeded")])
+    cliente = _cliente_api(max_reintentos=3)
+
+    with pytest.raises(ErrorEmbeddings) as excinfo:
+        await _generar(transporte, ["hola"], cliente)
+
+    mensaje = str(excinfo.value)
+    assert "429" in mensaje
+    assert "rate limit exceeded" in mensaje
+
+
+# --- 5xx: se conservan reintentos finitos + backoff --------------------------
+
+
+@pytest.mark.parametrize("codigo", [500, 502, 503, 504])
+async def test_5xx_reintenta_y_exitoso(codigo, sans_dormir):
+    transporte = _Transporte([httpx.Response(codigo, text="error"), _exito])
     cliente = _cliente_api(max_reintentos=3)
 
     vectores = await _generar(transporte, ["hola"], cliente)
 
-    assert len(transporte.llamadas) == 2, "429 -> reintento -> 200"
-    assert sans_dormir, "debe haber esperado con backoff"
+    assert len(transporte.llamadas) == 2, "5xx -> reintento -> 200"
+    assert len(sans_dormir) == 1, "debe esperar con backoff antes de reintentar"
     assert len(vectores) == 1
     assert len(vectores[0]) == 768
 
 
-async def test_429_usar_backoff_progresivo(sans_dormir):
+async def test_5xx_usar_backoff_progresivo(sans_dormir):
     transporte = _Transporte(
         [
-            httpx.Response(429, text="RESOURCE_EXHAUSTED"),
-            httpx.Response(429, text="RESOURCE_EXHAUSTED"),
-            httpx.Response(429, text="RESOURCE_EXHAUSTED"),
+            httpx.Response(503, text="unavailable"),
+            httpx.Response(503, text="unavailable"),
+            httpx.Response(503, text="unavailable"),
             _exito,
         ]
     )
@@ -169,10 +233,10 @@ async def test_429_usar_backoff_progresivo(sans_dormir):
     assert all(d <= 30.0 for d in sans_dormir)
 
 
-async def test_429_respeta_retry_after(sans_dormir):
+async def test_5xx_respeta_retry_after(sans_dormir):
     transporte = _Transporte(
         [
-            httpx.Response(429, headers={"retry-after": "2"}, text="too many"),
+            httpx.Response(503, headers={"retry-after": "2"}, text="unavailable"),
             _exito,
         ]
     )
@@ -180,35 +244,20 @@ async def test_429_respeta_retry_after(sans_dormir):
 
     await _generar(transporte, ["hola"], cliente)
 
-    assert sans_dormir == [2.0], "debe respetar Retry-After pese a cerrar tras 1 intento"
+    assert sans_dormir == [2.0], "debe respetar Retry-After y reintentar"
 
 
-async def test_429_agotado_lanza_error_finito(sans_dormir):
+async def test_5xx_agotado_lanza_error_finito(sans_dormir):
     transporte = _Transporte(
-        [httpx.Response(429, text="RESOURCE_EXHAUSTED") for _ in range(10)]
+        [httpx.Response(503, text="unavailable") for _ in range(10)]
     )
     cliente = _cliente_api(max_reintentos=3)
 
     with pytest.raises(ErrorEmbeddings, match="3 intentos"):
         await _generar(transporte, ["hola"], cliente)
 
-    # Solo 3 intentos: sin bucles infinitos, independientemente de las
-    # respuestas que queden en la cola.
+    # Solo 3 intentos: sin bucles infinitos.
     assert len(transporte.llamadas) == 3
-
-
-async def test_resource_exhausted_en_cuerpo_sin_codigo_429(sans_dormir):
-    transporte = _Transporte(
-        [
-            httpx.Response(200, json={"error": {"code": 429, "message": "RESOURCE_EXHAUSTED"}}),
-            _exito,
-        ]
-    )
-    cliente = _cliente_api(max_reintentos=3)
-
-    vectores = await _generar(transporte, ["hola"], cliente)
-    assert len(transporte.llamadas) == 2
-    assert len(vectores) == 1
 
 
 # --- errores definitivos -----------------------------------------------------
@@ -269,3 +318,29 @@ async def test_sin_clave_lanza_sin_hacer_red():
 async def test_lista_vacia_devuelve_vacio():
     cliente = _cliente_api()
     assert await cliente.generar([], cliente=httpx.AsyncClient()) == []
+
+
+# --- cuota DIARIA: no reintentar en bucle ------------------------------------
+
+
+async def test_cuota_diaria_falla_sin_reintentar(sans_dormir):
+    """Un agotamiento de cuota diaria no debe reintentarse (consume cuota)."""
+    transporte = _Transporte(
+        [
+            httpx.Response(
+                429,
+                text=(
+                    "Quota exceeded for quota metric 'Generate requests per day "
+                    "per project' and limit 'GenerateRequestsPerDayPerProject'"
+                ),
+            ),
+            _exito,
+        ]
+    )
+    cliente = _cliente_api(max_reintentos=5)
+
+    with pytest.raises(ErrorEmbeddings, match="cuota diaria"):
+        await _generar(transporte, ["hola"], cliente)
+
+    assert len(transporte.llamadas) == 1, "no debe reintentar cuota diaria"
+    assert sans_dormir == [], "no debe esperar tras cuota diaria"

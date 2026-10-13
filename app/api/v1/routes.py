@@ -12,6 +12,7 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.chat import router as chat_router
 from app.api.v1.consulta import router as consulta_router
 from app.api.v1.ingesta import router as ingesta_router
 from app.api.v1.normativa import router as normativa_router
@@ -31,3 +32,4 @@ def raiz() -> dict[str, str]:
 api_router.include_router(normativa_router)
 api_router.include_router(ingesta_router)
 api_router.include_router(consulta_router)
+api_router.include_router(chat_router)

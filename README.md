@@ -703,11 +703,12 @@ Hasta esta entrega la FASE 5 queda **implementada y verificada con mocks**;
 las métricas T1–T8 **no** se han medido aún en producción porque dependen de
 correr el pipeline real (red + cuota de Gemini) por unos minutos. El comando
 de la sección 14.3 es el único paso pendiente, y sus resultados son
-reproducibles. Además, la variable `GEMINI_MODEL` del entorno apunta a un
-modelo de generación ya retirado upstream (`gemini-2.0-flash`); el de
-embeddings (`gemini-embedding-001`) funciona y es el que usa el benchmark. La
-solución es actualizar `GEMINI_MODEL` a `gemini-3.8-flash` en el entorno (no
-se ha editado `.env` para no alterar fases anteriores).
+reproducibles. Además, la variable `GEMINI_MODEL` apuntaba a un modelo de
+generación ya retirado upstream (`gemini-2.0-flash`); el de embeddings
+(`gemini-embedding-001`) funciona y es el que usa el benchmark. **Actualizado**
+en `.env`, `.env.example` y el valor por defecto de `config.py` a
+`gemini-3.8-flash` (FASE 6), la recomendación explícita que devuelve la propia
+API de Google al invocar el modelo retirado.
 
 ### 14.7 Modo `--solo-scraping` (medición aislada de la descarga)
 
@@ -741,3 +742,91 @@ Detalles del contrato:
 El benchmark integral (sección 14.3) y el modo `--corpus` (14.4) **no
 cambian**: `solo_scraping` está desactivado por defecto y es incompatible con
 `--corpus`.
+
+## 15. FASE 6 — datos reales, PDF y chat conversacional
+
+### 15.1 Qué implementa esta fase
+
+- **Extracción HTML y PDF.** La ingesta web ya no asume solo HTML: detecta PDF
+  por firma `%PDF-` o `Content-Type`, extrae texto pagina a pagina con `pypdf`
+  y rechaza contenido binario no soportado. Un PDF corrupto o sin texto se
+  reporta como error de descarga (no se inserta basura).
+- **Metadatos de ingesta.** La respuesta de `POST /api/ingestar-web` incluye
+  `documentos` con `url`, `titulo`, `mime`, `paginas` y `fragmentos`.
+- **Clasificación de dominio.** Un clasificador determinista por palabras clave
+  decide el dominio de una pregunta; si hay empate o no hay señales, no se
+  consulta a ciegas.
+- **Chat automático.** `POST /api/consultar-auto` enruta la pregunta a la
+  colección financiera o tributaria y responde con evidencia.
+- **Interfaz web.** `GET /chat` sirve una interfaz conversacional (selector de
+  dominio automático/financiero/tributario o consulta manual por colección).
+
+### 15.2 Endpoint `POST /api/consultar-auto`
+
+Cuerpo:
+
+```json
+{ "pregunta": "texto de la consulta",
+  "dominio": null,
+  "coleccion_id": null,
+  "top_k": 5,
+  "similarity_threshold": 0.5 }
+```
+
+- `dominio` admite `"financiero"` o `"tributario"`; si es `null`, se infiere.
+- Si el dominio es ambiguo, la respuesta trae `ambigua: true` y una
+  `aclaracion`, sin consultar la base.
+- Si no hay señales de dominio, la respuesta trae una `aclaracion` de fuera de
+  dominio.
+- La respuesta incluye `advertencia` cuando hay datos de prueba (`seed://`).
+
+### 15.3 Datos de prueba y trazabilidad
+
+Las evidencias de semilla (`origen_url` con prefijo `seed://`) nunca se usan
+para redactar: se marcan con `es_datos_prueba: true` y, si son la única
+evidencia, no se invoca al modelo de generación. El detalle del estado de los
+datos reales y del plan de ingesta está en
+[`docs/validacion_datos_reales.md`](docs/validacion_datos_reales.md).
+
+### 15.4 Pruebas
+
+```bash
+docker compose exec -T backend python -m pytest -q
+```
+
+Cubren extracción PDF/HTML (sin red, con `httpx.MockTransport`), clasificación,
+chat automático (sin invocar al LLM con datos de prueba), mapeo HTTP de errores
+y la interfaz `/chat`.
+
+### 15.5 Calidad documental (fases 1–6)
+
+Mejoras de extracción y previsualización segura, verificadas contra fuentes
+oficiales reales sin consumir cuota de Gemini:
+
+- **PDF cifrados AES.** `cryptography==50.0.2` (requerido por `pypdf`). Se
+  maneja `DependencyError` con un mensaje claro.
+- **Marcas de página.** Cada fragmento de un PDF multipágina empieza con
+  `[página N]`, lo que permite citar la página exacta.
+- **Limpieza de HTML.** Se eliminan menús de navegación, avisos de portal
+  (`.gob.bo`), boilerplate y enlaces repetidos, conservando enlaces aislados
+  relevantes. Comparación insensible a acentos.
+- **Deduplicación.** `ResultadoDescarga.duplicados` evita embeber dos veces el
+  mismo contenido.
+- **Límite de tamaño.** `http_max_bytes` se elevó a **20 MB** para admitir leyes
+  oficiales grandes (Ley 2492 ≈ 6.7 MB, Ley 843 ≈ 9.8 MB).
+- **Preview sin Gemini.** Nuevo `POST /api/previsualizar-ingesta`: ejecuta
+  scraping, limpieza y chunking y devuelve conteos, documentos, duplicados y una
+  muestra de fragmentos **sin llamar a Gemini ni escribir en la base de datos**.
+  Admite `min_caracteres` para descartar documentos demasiado cortos.
+
+```bash
+curl -s -X POST http://localhost:8000/api/previsualizar-ingesta \
+  -H 'Content-Type: application/json' \
+  -d '{"coleccion_id":"financiero_bolivia_2026",
+       "urls":["https://www.asfi.gob.bo/sites/default/files/2025-09/Ley%20N%C2%B0%20393%20de%20Servicios%20Financieros.pdf"],
+       "min_caracteres":500}'
+```
+
+El inventario HTTP-verificado de fuentes y los resultados de previsualización
+están en [`docs/fuentes_oficiales.md`](docs/fuentes_oficiales.md) y el informe de
+cierre en [`docs/entrega_calidad_documental.md`](docs/entrega_calidad_documental.md).

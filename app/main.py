@@ -9,12 +9,19 @@ FASE 4: consulta RAG (`POST /api/consultar`) con aislamiento vectorial por
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 from app.api.v1.routes import api_router
 from app.core.config import settings
 from app.database.session import dispose_motor
+
+# Directorio de archivos estaticos servidos por la aplicacion. Se resuelve de
+# forma robusta a partir de la ubicacion real de este modulo para que funcione
+# tanto en local como dentro del contenedor (donde el codigo vive en /app/app).
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 DESCRIPTION = (
     "Pipeline RAG Multi-Dominio con Scraping Concurrente y Aislamiento Vectorial.\n\n"
@@ -28,10 +35,12 @@ DESCRIPTION = (
     "`match_normativa_coleccion`, verificando el aislamiento antes de llamar "
     "al LLM (temperatura 0.0).\n\n"
     "Endpoints disponibles:\n"
+    "- `GET /chat` (interfaz web de chat)\n"
     "- `GET /api/colecciones`\n"
     "- `GET /api/colecciones/{coleccion_id}` (diagnostico de solo lectura)\n"
     "- `POST /api/ingestar-web` (ingesta web, FASE 3)\n"
-    "- `POST /api/consultar` (consulta RAG, FASE 4)\n\n"
+    "- `POST /api/consultar` (consulta RAG, FASE 4)\n"
+    "- `POST /api/consultar-auto` (chat conversacional con deteccion de dominio)\n\n"
     "Endpoints pendientes (fases posteriores):\n"
     "- `POST /api/benchmark` (FASE 5)"
 )
@@ -58,3 +67,18 @@ app.include_router(api_router)
 def health() -> dict[str, str]:
     """Comprobacion de vida del backend."""
     return {"status": "online", "mensaje": "Backend activo"}
+
+
+@app.get("/chat", tags=["interfaz"], include_in_schema=False)
+def chat() -> FileResponse:
+    """Sirve la interfaz web de chat RAG multi-dominio.
+
+    La ruta del archivo se resuelve de forma robusta a partir de la ubicacion
+    del modulo, por lo que no depende del directorio de trabajo del proceso.
+    """
+    ruta = STATIC_DIR / "chat.html"
+    if not ruta.is_file():
+        raise HTTPException(
+            status_code=404, detail="La interfaz de chat no esta disponible."
+        )
+    return FileResponse(ruta, media_type="text/html")

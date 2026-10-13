@@ -13,15 +13,38 @@ registran como fallos individuales y NO detienen la ingesta del resto.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 import httpx
 
 from app.models.ingesta import ErrorPorUrl
+from app.services.pdf_extractor import (
+    PdfInvalido,
+    PdfSinTexto,
+    detectar_pdf,
+    extraer_texto_pdf,
+    parece_binario,
+)
+from app.utils.dedup import huella_contenido
 from app.utils.html_cleaner import limpiar_html
 
 _URL_MAX_LEN = 2048
+
+# Content-Types que se tratan como HTML/texto explicito.
+_MIMES_TEXTO = ("text/html", "application/xhtml", "text/plain", "text/xml", "application/xml")
+
+
+@dataclass
+class DocumentoDescargado:
+    """Texto extraido de una URL + metadatos de trazabilidad (fase D)."""
+
+    url: str
+    texto: str
+    titulo: str | None = None
+    mime: str | None = None
+    paginas: int | None = None
 
 
 @dataclass
@@ -30,12 +53,37 @@ class ResultadoDescarga:
 
     textos: list[tuple[str, str]] = field(default_factory=list)
     errores: list[ErrorPorUrl] = field(default_factory=list)
+    documentos: list[DocumentoDescargado] = field(default_factory=list)
+    # URLs cuyo contenido era identico a otro ya conservado (deduplicacion).
+    duplicados: list[str] = field(default_factory=list)
 
-    def registrar_ok(self, url: str, texto: str) -> None:
+    def registrar_ok(
+        self,
+        url: str,
+        texto: str,
+        *,
+        titulo: str | None = None,
+        mime: str | None = None,
+        paginas: int | None = None,
+    ) -> None:
         self.textos.append((url, texto))
+        self.documentos.append(
+            DocumentoDescargado(
+                url=url, texto=texto, titulo=titulo, mime=mime, paginas=paginas
+            )
+        )
 
     def registrar_error(self, url: str, motivo: str) -> None:
         self.errores.append(ErrorPorUrl(url=url, motivo=motivo))
+
+
+def extraer_titulo_html(html: str) -> str | None:
+    """Devuelve el contenido de ``<title>`` si existe (best effort)."""
+    coincidencia = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not coincidencia:
+        return None
+    titulo = " ".join(coincidencia.group(1).split())
+    return titulo or None
 
 
 def es_url_valida(url: str) -> bool:
@@ -62,8 +110,12 @@ class _ContenidoExcesivo(Exception):
     """La pagina supera ``max_bytes``: proteger la memoria del servidor."""
 
 
-async def _leer_con_limite(respuesta: httpx.Response, max_bytes: int) -> str:
-    """Lee el cuerpo en streaming y aborta si supera ``max_bytes``."""
+async def _leer_bytes_con_limite(respuesta: httpx.Response, max_bytes: int) -> bytes:
+    """Lee el cuerpo en streaming y aborta si supera ``max_bytes``.
+
+    Se mantiene en bytes (no se decodifica) porque el contenido puede ser un
+    PDF binario; la decision HTML/PDF se toma despues.
+    """
     if respuesta.headers.get("content-length"):
         try:
             declarado = int(respuesta.headers["content-length"])
@@ -79,7 +131,7 @@ async def _leer_con_limite(respuesta: httpx.Response, max_bytes: int) -> str:
         total += len(trozo)
         if total > max_bytes:
             raise _ContenidoExcesivo()
-    return b"".join(piezas).decode("utf-8", errors="replace")
+    return b"".join(piezas)
 
 
 async def _descargar_una(
@@ -105,7 +157,8 @@ async def _descargar_una(
                         request=respuesta.request,
                         response=respuesta,
                     )
-                html = await _leer_con_limite(respuesta, max_bytes)
+                datos = await _leer_bytes_con_limite(respuesta, max_bytes)
+                content_type = respuesta.headers.get("content-type")
         except _ContenidoExcesivo:
             resultado.registrar_error(
                 url, f"contenido excede el limite de {max_bytes} bytes"
@@ -121,11 +174,81 @@ async def _descargar_una(
             resultado.registrar_error(url, f"error de conexion: {type(error).__name__}")
             return
 
+        if detectar_pdf(datos, content_type):
+            _registrar_pdf(resultado, url, datos, content_type)
+            return
+
+        if parece_binario(datos, content_type):
+            resultado.registrar_error(
+                url, "contenido binario no soportado (no es HTML ni PDF)"
+            )
+            return
+
+        html = datos.decode("utf-8", errors="replace")
         texto = limpiar_html(html)
         if not texto.strip():
             resultado.registrar_error(url, "contenido vacio o sin texto util")
             return
-        resultado.registrar_ok(url, texto)
+        resultado.registrar_ok(
+            url,
+            texto,
+            titulo=extraer_titulo_html(html),
+            mime=(content_type or "text/html").split(";")[0].strip(),
+        )
+
+
+def _registrar_pdf(
+    resultado: ResultadoDescarga,
+    url: str,
+    datos: bytes,
+    content_type: str | None,
+) -> None:
+    """Extrae el texto de un PDF y lo registra o reporta el fallo concreto."""
+    try:
+        texto, paginas = extraer_texto_pdf(datos)
+    except PdfSinTexto as error:
+        resultado.registrar_error(url, str(error))
+        return
+    except PdfInvalido as error:
+        resultado.registrar_error(url, f"PDF invalido: {error}")
+        return
+    resultado.registrar_ok(
+        url,
+        texto,
+        mime=(content_type or "application/pdf").split(";")[0].strip(),
+        paginas=paginas,
+    )
+
+
+def _huella_texto(texto: str) -> str:
+    """Huella estable del contenido normalizado (para deduplicar).
+
+    Delega en ``app.utils.dedup`` para compartir la MISMA normalizacion que el
+    deduplicado frente a la base de datos (evita discrepancias).
+    """
+    return huella_contenido(texto)
+
+
+def _deduplicar(resultado: ResultadoDescarga) -> None:
+    """Conserva el primer documento de cada contenido y anota los repetidos.
+
+    Dos URLs distintas pueden devolver el mismo texto (por ejemplo, la misma
+    ley publicada en dos rutas). Se conserva la primera aparicion para no
+    duplicar fragmentos ni gastar cuota de embeddings en contenido repetido.
+    """
+    vistos: set[str] = set()
+    textos: list[tuple[str, str]] = []
+    documentos: list[DocumentoDescargado] = []
+    for documento in resultado.documentos:
+        huella = huella_contenido(documento.texto)
+        if huella in vistos:
+            resultado.duplicados.append(documento.url)
+            continue
+        vistos.add(huella)
+        documentos.append(documento)
+        textos.append((documento.url, documento.texto))
+    resultado.textos = textos
+    resultado.documentos = documentos
 
 
 async def descargar_y_limpiar(
@@ -135,12 +258,16 @@ async def descargar_y_limpiar(
     timeout_s: float,
     user_agent: str,
     max_bytes: int,
+    transporte: httpx.AsyncBaseTransport | None = None,
 ) -> ResultadoDescarga:
     """Descarga ``urls`` concurrentemente y devuelve su texto limpio.
 
     Aparece una unica cola de logica pero se ejecuta con ``concurrency``
     workers: ``asyncio.gather`` programa todas las tareas y el semaforo
     reparte el trabajo respetando el limite.
+
+    ``transporte`` es solo para pruebas (``httpx.MockTransport``); en
+    produccion queda en ``None`` y se usa la red real.
     """
     resultado = ResultadoDescarga()
     semaforo = asyncio.Semaphore(max(1, concurrency))
@@ -150,10 +277,12 @@ async def descargar_y_limpiar(
         follow_redirects=True,
         headers={"User-Agent": user_agent},
         limits=httpx.Limits(max_connections=max(1, concurrency)),
+        transport=transporte,
     ) as cliente:
         tareas = [
             _descargar_una(semaforo, cliente, url, max_bytes, resultado)
             for url in urls
         ]
         await asyncio.gather(*tareas)
+    _deduplicar(resultado)
     return resultado

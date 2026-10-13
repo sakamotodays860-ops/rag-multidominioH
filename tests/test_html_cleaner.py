@@ -76,3 +76,46 @@ def test_ok_url_relative_no_se_emite():
     limpio = limpiar_html(html)
     assert "enlace" in limpio
     assert "/ruta_relativa" not in limpio
+
+
+def test_elimina_boilerplate_del_portal():
+    html = (
+        '<a href="#main">Pasar al contenido principal</a>'
+        "<p>Uso de .gob.bo Los portales oficiales del Estado usan este dominio.</p>"
+        "<p>Articulo 1. La presente Ley regula el sistema financiero.</p>"
+    )
+    limpio = limpiar_html(html)
+    assert "Pasar al contenido principal" not in limpio
+    assert "Uso de .gob.bo" not in limpio
+    assert "La presente Ley regula" in limpio
+
+
+def test_elimina_menu_de_enlaces_consecutivos():
+    html = (
+        "<ul>"
+        '<li><a href="/">Inicio</a></li>'
+        '<li><a href="/normativa">Normativa</a></li>'
+        '<li><a href="/contacto">Contacto</a></li>'
+        "</ul>"
+        "<p>Articulo 2. El ambito de aplicacion de la Ley.</p>"
+    )
+    limpio = limpiar_html(html)
+    for item in ("Inicio", "Normativa", "Contacto"):
+        assert item not in limpio
+    assert "ambito de aplicacion" in limpio
+
+
+def test_conserva_un_enlace_aislado_corto():
+    """Un unico enlace corto no es un menu y se conserva."""
+    limpio = limpiar_html('<a href="/x">Ver anexo</a>')
+    assert "Ver anexo" in limpio
+
+
+def test_elimina_aviso_gob_bo_insensible_a_acentos():
+    html = (
+        "<p>Esto significa que estás conectado a un dominio .gob.bo de manera "
+        "segura.</p><p>Articulo 3. Vigencia de la norma.</p>"
+    )
+    limpio = limpiar_html(html)
+    assert "conectado" not in limpio
+    assert "Articulo 3. Vigencia" in limpio

@@ -20,6 +20,7 @@ from helpers import (
     COLECCION_FINANCIERO,
     COLECCION_TRIBUTARIO,
     FRAGMENTOS_ESPERADOS,
+    PREFIJO_SEMILLA,
     vector_financiero,
     vector_tributario,
 )
@@ -42,23 +43,38 @@ async def _contar_todo(sesion) -> dict[str, int]:
     return {fila[0]: int(fila[1]) for fila in resultado.all()}
 
 
+async def _contar_semilla(sesion) -> dict[str, int]:
+    """Cuenta solo las filas sinteticas de demostracion (``seed://``)."""
+    resultado = await sesion.execute(
+        text(
+            "SELECT coleccion_id, count(*) FROM normativa_bancaria "
+            "WHERE origen_url LIKE :p GROUP BY coleccion_id ORDER BY coleccion_id"
+        ),
+        {"p": f"{PREFIJO_SEMILLA}%"},
+    )
+    return {fila[0]: int(fila[1]) for fila in resultado.all()}
+
+
 @pytest.mark.asyncio
 async def test_los_datos_de_demostracion_existen(sesion):
-    """Los registros base existen con el tamano esperado y NO se crean mas.
+    """Los registros SEMILLA existen con el tamano esperado y NO se crean mas.
 
-    Pueden existir OTRAS colecciones (p. ej. `benchmark_2026`, creada por el
-    benchmark de la FASE 5), por lo que solo se exige el tamano exacto de las
-    colecciones de demostracion, no que sean las unicas de la tabla.
+    Desde la FASE 6 pueden existir documentos reales en las mismas
+    colecciones, por lo que se exige el tamano EXACTO de las filas semilla
+    (``seed://``) y que el total de cada coleccion sea al menos ese numero.
     """
     conteos = await _contar_todo(sesion)
-    assert conteos.get(COLECCION_FINANCIERO) == FRAGMENTOS_ESPERADOS, (
-        f"{COLECCION_FINANCIERO} deberia tener {FRAGMENTOS_ESPERADOS} "
-        f"fragmentos; conteos: {conteos}"
+    semilla = await _contar_semilla(sesion)
+    assert semilla.get(COLECCION_FINANCIERO) == FRAGMENTOS_ESPERADOS, (
+        f"{COLECCION_FINANCIERO} deberia tener {FRAGMENTOS_ESPERADOS} filas "
+        f"semilla; conteos: {semilla}"
     )
-    assert conteos.get(COLECCION_TRIBUTARIO) == FRAGMENTOS_ESPERADOS, (
-        f"{COLECCION_TRIBUTARIO} deberia tener {FRAGMENTOS_ESPERADOS} "
-        f"fragmentos; conteos: {conteos}"
+    assert semilla.get(COLECCION_TRIBUTARIO) == FRAGMENTOS_ESPERADOS, (
+        f"{COLECCION_TRIBUTARIO} deberia tener {FRAGMENTOS_ESPERADOS} filas "
+        f"semilla; conteos: {semilla}"
     )
+    assert conteos.get(COLECCION_FINANCIERO, 0) >= FRAGMENTOS_ESPERADOS
+    assert conteos.get(COLECCION_TRIBUTARIO, 0) >= FRAGMENTOS_ESPERADOS
 
 
 @pytest.mark.asyncio
@@ -80,7 +96,7 @@ async def test_consulta_devuelve_solo_su_coleccion(sesion, coleccion, vector):
     )
 
     assert resultados, f"la consulta a {coleccion} no devolvio nada"
-    assert len(resultados) == FRAGMENTOS_ESPERADOS
+    assert len(resultados) >= FRAGMENTOS_ESPERADOS
 
     for fila in resultados:
         assert fila.coleccion_id == coleccion, (
@@ -114,7 +130,7 @@ async def test_sin_contaminacion_con_umbral_permisivo(sesion, coleccion, vector)
         match_count=MATCH_COUNT_GRANDE,
     )
 
-    assert len(resultados) == FRAGMENTOS_ESPERADOS
+    assert len(resultados) >= FRAGMENTOS_ESPERADOS
     ajenos = [f for f in resultados if f.coleccion_id != coleccion]
     assert ajenos == [], (
         f"contaminacion cruzada en {coleccion}: "
@@ -168,7 +184,7 @@ async def test_umbral_excluye_elementos_del_dominio_contrario(sesion):
         match_threshold=0.9,
         match_count=10,
     )
-    assert len(financieros) == FRAGMENTOS_ESPERADOS
+    assert len(financieros) >= FRAGMENTOS_ESPERADOS
     assert all(f.similitud >= 0.9 for f in financieros)
     assert all(f.coleccion_id == COLECCION_FINANCIERO for f in financieros)
 

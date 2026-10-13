@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 import httpx
 
+from app.core.config import get_settings
 from app.models.consulta import PeticionConsulta, RespuestaConsulta
 from app.services.consulta import (
     ErrorBaseDatos,
@@ -15,7 +16,7 @@ from app.services.consulta import (
     ejecutar_consulta,
 )
 from app.services.embeddings import ErrorEmbeddings
-from app.services.generacion import ErrorGeneracion
+from app.services.generacion import ErrorGeneracion, ErrorProveedorNoDisponible
 
 router = APIRouter(prefix="/api", tags=["consulta"])
 
@@ -44,11 +45,23 @@ _UPSTREAM = (
     ),
 )
 async def consultar(peticion: PeticionConsulta) -> RespuestaConsulta:
+    config = get_settings()
     try:
-        return await ejecutar_consulta(peticion)
+        return await ejecutar_consulta(
+            peticion,
+            usar_lexico=config.recuperacion_lexica,
+            permitir_lexico_sin_embedding=config.recuperacion_lexica_sin_embedding,
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=400, detail=f"Solicitud de consulta no valida: {error}"
+        ) from error
+    except ErrorProveedorNoDisponible as error:
+        # El proveedor de generacion no responde (5xx persistente): se informa
+        # de forma explicita y se sugiere reintentar mas tarde (503).
+        raise HTTPException(
+            status_code=503,
+            detail=f"Proveedor de generacion no disponible: {error}",
         ) from error
     except _UPSTREAM as error:
         raise HTTPException(

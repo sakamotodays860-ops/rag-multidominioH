@@ -45,6 +45,10 @@ class PeticionIngesta(BaseModel):
     concurrency_workers: Annotated[int, Field(ge=1, le=64)] = (
         min(_settings.http_max_concurrencia, CONCURRENCIA_MAX)
     )
+    # Gate de contenido minimo (opt-in). 0 = desactivado. Un documento cuyo
+    # texto limpio tenga menos caracteres que este umbral se rechaza como error
+    # individual en lugar de generar fragmentos de baja calidad.
+    min_caracteres: Annotated[int, Field(ge=0)] = 0
 
     def validar(self) -> None:
         """Valida el dominio: sobre ``chunk_size``/``chunk_overlap``.
@@ -69,10 +73,34 @@ class ErrorPorUrl(BaseModel):
     motivo: str
 
 
+class DocumentoIngestado(BaseModel):
+    """Metadatos de trazabilidad de un documento aceptado (fase D).
+
+    Reflejan lo que se extrajo realmente. El esquema actual de
+    ``normativa_bancaria`` solo persiste ``contenido`` y ``origen_url``; el
+    titulo, el MIME y el numero de paginas se conservan aqui (respuesta de la
+    ingesta) sin alterar el esquema. Ver
+    ``docs/validacion_datos_reales.md`` para la limitacion y la migracion
+    aditiva propuesta.
+    """
+
+    url: str
+    titulo: str | None = None
+    mime: str | None = None
+    paginas: int | None = None
+    fragmentos: int = 0
+
+
 class RespuestaIngesta(BaseModel):
     """Informe de una ingesta terminada (requisito F).
 
     Incluye la trazabilidad temporal de las cuatro fases (requisito K).
+
+    Idempotencia: ``registros_insertados`` son las filas nuevas y
+    ``registros_omitidos`` los fragmentos que ya existian en la coleccion (mismo
+    contenido normalizado) mas los duplicados detectados dentro de la propia
+    peticion. ``duplicados`` lista las URLs cuyo contenido coincidia con otra en
+    la misma peticion.
     """
 
     coleccion_id: str
@@ -80,13 +108,42 @@ class RespuestaIngesta(BaseModel):
     urls_procesadas: int
     urls_con_error: int
     errores: list[ErrorPorUrl] = Field(default_factory=list)
+    documentos: list[DocumentoIngestado] = Field(default_factory=list)
+    duplicados: list[str] = Field(default_factory=list)
 
     fragmentos_generados: int
     embeddings_generados: int
     registros_insertados: int
+    registros_omitidos: int = 0
 
     tiempo_scraping_s: float
     tiempo_chunking_s: float
     tiempo_embeddings_s: float
     tiempo_insercion_s: float
+    tiempo_total_s: float
+
+
+class RespuestaPrevisualizacion(BaseModel):
+    """Informe de una previsualizacion de ingesta SIN Gemini ni base de datos.
+
+    Ejecuta solo scraping + limpieza + chunking + deduplicacion y devuelve los
+    conteos y una muestra de fragmentos para revisar la calidad de la extraccion
+    antes de autorizar una ingesta real (que consume cuota de embeddings).
+    """
+
+    coleccion_id: str
+    urls_recibidas: int
+    urls_procesadas: int
+    urls_con_error: int
+    errores: list[ErrorPorUrl] = Field(default_factory=list)
+    documentos: list[DocumentoIngestado] = Field(default_factory=list)
+
+    fragmentos_generados: int
+    # URLs cuyo contenido era identico al de otra ya considerada.
+    duplicados: list[str] = Field(default_factory=list)
+    # Primeros fragmentos extraidos (recortados) para inspeccion manual.
+    muestra_fragmentos: list[str] = Field(default_factory=list)
+
+    tiempo_scraping_s: float
+    tiempo_chunking_s: float
     tiempo_total_s: float

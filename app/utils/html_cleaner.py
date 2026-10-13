@@ -16,6 +16,7 @@ cerrar.
 
 from __future__ import annotations
 
+import unicodedata
 from html.parser import HTMLParser
 
 # Etiquetas cuyo contenido se descarta por completo.
@@ -120,21 +121,31 @@ _SEPARADOR = "\n\n"
 
 
 class _ExtractorTexto(HTMLParser):
-    """Recoge el texto plano descartando el ruido de presentacion."""
+    """Recoge el texto plano descartando el ruido de presentacion.
+
+    Cada pieza de texto se anota con si procede del interior de un enlace
+    (``<a>``). Esa marca permite despues descartar menus de navegacion, que en
+    los portales reales suelen ser listas de enlaces cortos consecutivos aunque
+    no vengan envueltos en ``<nav>``.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._pila: list[str] = []
-        self._piezas: list[str] = []
+        # Cada pieza es (texto, es_enlace).
+        self._piezas: list[tuple[str, bool]] = []
 
     def _dentro_de_ignorada(self) -> bool:
         return any(etiqueta in IGNORAR for etiqueta in self._pila)
 
+    def _dentro_de_enlace(self) -> bool:
+        return "a" in self._pila
+
     def _separar(self) -> None:
         if not self._piezas:
             return
-        if not self._piezas[-1].endswith("\n"):
-            self._piezas.append(_SEPARADOR)
+        if not self._piezas[-1][0].endswith("\n"):
+            self._piezas.append((_SEPARADOR, False))
 
     def handle_starttag(self, tag: str, attrs) -> None:
         if tag in VACIOS:
@@ -163,25 +174,100 @@ class _ExtractorTexto(HTMLParser):
         if self._dentro_de_ignorada():
             return
         if data:
-            self._piezas.append(data)
+            self._piezas.append((data, self._dentro_de_enlace()))
 
     def handle_comment(self, data: str) -> None:
         # Los comentarios HTML nunca son contenido util.
         return
 
+    def bloques(self) -> list[tuple[str, bool]]:
+        """Agrupa las piezas en ``(texto_normalizado, solo_enlaces)``.
 
-def _normalizar(texto: str) -> str:
-    """Colapsa espacios y deja como maximo un parrafo en blanco."""
-    salida: list[str] = []
-    for linea in texto.split("\n"):
-        linea = " ".join(linea.split())
-        if linea:
-            salida.append(linea)
-        elif salida and salida[-1] != "":
-            salida.append("")
-    while salida and salida[-1] == "":
-        salida.pop()
-    return "\n".join(salida)
+        Un bloque es el texto entre separadores de parrafo. ``solo_enlaces`` es
+        verdadero si todo el texto del bloque proviene de enlaces.
+        """
+        bloques: list[tuple[str, bool]] = []
+        actual: list[str] = []
+        marcas: list[bool] = []
+
+        def cerrar() -> None:
+            partes = [" ".join(parte.split()) for parte in actual]
+            partes = [parte for parte in partes if parte]
+            if partes:
+                bloques.append((" ".join(partes), all(marcas)))
+            actual.clear()
+            marcas.clear()
+
+        for texto, es_enlace in self._piezas:
+            if texto == _SEPARADOR:
+                cerrar()
+            else:
+                actual.append(texto)
+                marcas.append(es_enlace)
+        cerrar()
+        return bloques
+
+
+# Frases de "chrome" del portal que nunca son normativa. Se comparan sin
+# acentos, en minusculas y por subcadena.
+_BOILERPLATE: tuple[str, ...] = (
+    "pasar al contenido principal",
+    "saltar al contenido",
+    "saltar a la navegacion",
+    "ir al contenido principal",
+    "uso de .gob.bo",
+    "uso de https",
+    "los portales oficiales",
+    "emplean el dominio .gob.bo",
+    "conectado a un dominio",
+    "esto significa que estas conectado",
+    "sitio oficial del estado plurinacional",
+    "se sugiere compartir informacion sensible",
+)
+
+# Un bloque de enlaces se considera navegacion si es corto y va acompañado de
+# otros enlaces cortos seguidos (un menu). Un enlace aislado se conserva.
+_MAX_ENLACE_NAV = 60
+_MIN_RUN_NAV = 2
+
+
+def _sin_acentos(texto: str) -> str:
+    """Quita los diacriticos para comparar frases de forma robusta."""
+    descompuesto = unicodedata.normalize("NFKD", texto)
+    return "".join(caracter for caracter in descompuesto if not unicodedata.combining(caracter))
+
+
+def _es_boilerplate(texto: str) -> bool:
+    normalizado = _sin_acentos(texto.casefold())
+    return any(frase in normalizado for frase in _BOILERPLATE)
+
+
+def _quitar_runs_de_enlaces(
+    bloques: list[tuple[str, bool]],
+    *,
+    maximo: int = _MAX_ENLACE_NAV,
+    minimo: int = _MIN_RUN_NAV,
+) -> list[tuple[str, bool]]:
+    """Descarta secuencias de enlaces cortos (menus) pero conserva enlaces aislados."""
+    salida: list[tuple[str, bool]] = []
+    indice = 0
+    total = len(bloques)
+    while indice < total:
+        texto, es_enlace = bloques[indice]
+        if es_enlace and len(texto) <= maximo:
+            fin = indice
+            while (
+                fin < total
+                and bloques[fin][1]
+                and len(bloques[fin][0]) <= maximo
+            ):
+                fin += 1
+            if fin - indice >= minimo:
+                indice = fin
+                continue
+        salida.append(bloques[indice])
+        indice += 1
+    return salida
 
 
 def limpiar_html(html: str) -> str:
@@ -190,6 +276,9 @@ def limpiar_html(html: str) -> str:
     - descarta `script`, `style`, `nav`, `header`, `footer`, `aside`,
       formularios y cualquier otro elemento de `IGNORAR`;
     - descarta los comentarios HTML;
+    - elimina frases de "chrome" del portal (saltar al contenido, avisos del
+      dominio `.gob.bo`) y menus de navegacion formados por enlaces cortos
+      consecutivos;
     - separa los bloques con una linea en blanco para que el chunking corte
       en limites de parrafo;
     - normaliza espacios y lineas en blanco.
@@ -204,4 +293,6 @@ def limpiar_html(html: str) -> str:
         extractor.close()
     except Exception:
         return ""
-    return _normalizar("".join(extractor._piezas))
+    bloques = [bloque for bloque in extractor.bloques() if not _es_boilerplate(bloque[0])]
+    bloques = _quitar_runs_de_enlaces(bloques)
+    return "\n\n".join(texto for texto, _ in bloques)

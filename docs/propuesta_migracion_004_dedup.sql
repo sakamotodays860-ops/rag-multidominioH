@@ -1,0 +1,77 @@
+-- ---------------------------------------------------------------------------
+-- PROPUESTA de migracion 004 - indice unico de contenido por coleccion
+--
+-- ESTADO: NO APLICADA. NO ejecutar sin autorizacion explicita.
+--
+-- Este archivo NO vive en `migrations/` a proposito: `scripts/migrate.sh`
+-- aplica todos los .sql de ese directorio de forma automatica. Al estar aqui,
+-- queda como propuesta revisable y no se ejecuta por accidente.
+--
+-- QUE HARIA
+--   Anadir una columna generada `contenido_hash` y un indice UNICO
+--   `(coleccion_id, contenido_hash)` que impide a NIVEL DE BASE DE DATOS
+--   insertar dos fragmentos con el mismo contenido en la misma coleccion.
+--   Es una red de seguridad ADICIONAL a la logica de aplicacion ya
+--   implementada (`repository.insertar_fragmentos_sin_duplicados` +
+--   `pg_advisory_xact_lock`), que ya evita duplicados sin cambiar el esquema.
+--
+-- POR QUE ES OPCIONAL
+--   La solucion implementada en el codigo ya es idempotente y segura ante
+--   concurrencia (cerrojo de transaccion por coleccion). El indice unico solo
+--   protege frente a inserciones que NO pasen por la aplicacion (SQL manual).
+--
+-- REQUISITOS PREVIOS / VIABILIDAD (comprobados el 2026-10-13, solo lectura)
+--   - No hay contenido duplicado por coleccion:
+--       SELECT coleccion_id, md5(contenido), count(*)
+--       FROM normativa_bancaria
+--       GROUP BY 1,2 HAVING count(*) > 1;   -- 0 filas
+--     Por tanto el indice unico se puede crear sin fallar.
+--   - PostgreSQL 16.15 (admite columnas generadas STORED y `digest`).
+--
+-- CONSECUENCIAS
+--   - Anadir una columna generada STORED REESCRIBE la tabla (con 80 filas es
+--     inmediato; en tablas grandes habria que planificar la ventana).
+--   - `digest` (SHA-256) requiere la extension `pgcrypto`. Alternativa sin
+--     extension: usar `md5(contenido)` (colision despreciable para este uso).
+--   - DISCREPANCIA DE NORMALIZACION: la aplicacion normaliza en Python
+--     (`app.utils.dedup`: colapsa espacios y `casefold`). La expresion SQL de
+--     abajo aproxima esa normalizacion con `lower(...)`, que NO es identica a
+--     `casefold` para todos los caracteres Unicode. Si se aplica esta
+--     migracion, la aplicacion debe insertar con `ON CONFLICT
+--     (coleccion_id, contenido_hash) DO NOTHING` y calcular la huella con la
+--     MISMA expresion SQL, o unificar la normalizacion en un solo lugar.
+--     Mientras no se aplique, la aplicacion NO usa esta columna.
+--   - El aislamiento por `coleccion_id` se conserva: el indice es compuesto y
+--     empieza por `coleccion_id`; el mismo contenido en dos colecciones
+--     distintas sigue siendo valido.
+--   - `benchmark_2026` no se ve afectado salvo que ya tuviera duplicados (no
+--     los tiene). El indice es global a la tabla, por lo que conviene
+--     confirmar de nuevo la consulta de viabilidad justo antes de aplicar.
+--
+-- ---------------------------------------------------------------------------
+
+-- BEGIN;  -- descomentar al aplicar manualmente y revisar antes de COMMIT
+
+-- 1. Extension para SHA-256 (si ya existe, no hace nada).
+-- CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- 2. Columna generada con la huella normalizada del contenido.
+--    (Normalizacion aproximada: colapsa espacios y minusculas.)
+-- ALTER TABLE normativa_bancaria
+--     ADD COLUMN IF NOT EXISTS contenido_hash CHAR(64)
+--     GENERATED ALWAYS AS (
+--         encode(
+--             digest(
+--                 lower(btrim(regexp_replace(contenido, '\s+', ' ', 'g'))),
+--                 'sha256'
+--             ),
+--             'hex'
+--         )
+--     ) STORED;
+
+-- 3. Indice unico por (coleccion_id, contenido_hash).
+--    NO USAR CONCURRENTLY dentro de una transaccion; aqui va sin CONCURRENTLY.
+-- CREATE UNIQUE INDEX IF NOT EXISTS ux_normativa_bancaria_coleccion_hash
+--     ON normativa_bancaria (coleccion_id, contenido_hash);
+
+-- COMMIT;

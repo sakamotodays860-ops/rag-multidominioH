@@ -79,15 +79,23 @@ def test_endpoints_registrados_en_openapi(api):
         "/api/colecciones",
         "/api/colecciones/{coleccion_id}",
         "/api/ingestar-web",  # FASE 3
+        "/api/previsualizar-ingesta",  # FASE 4: preview sin Gemini
         "/api/consultar",  # FASE 4
+        "/api/consultar-auto",  # FASE H: chat con deteccion de dominio
     }
     assert rutas == rutas_esperadas
     # La ingesta solo permite POST (FASE 3).
     assert "post" in cuerpo["paths"]["/api/ingestar-web"]
     assert "get" not in cuerpo["paths"]["/api/ingestar-web"]
+    # La previsualizacion tambien es de solo POST (FASE 4).
+    assert "post" in cuerpo["paths"]["/api/previsualizar-ingesta"]
+    assert "get" not in cuerpo["paths"]["/api/previsualizar-ingesta"]
     # La consulta RAG tambien es de solo POST (FASE 4).
     assert "post" in cuerpo["paths"]["/api/consultar"]
     assert "get" not in cuerpo["paths"]["/api/consultar"]
+    # El chat automatico tambien es de solo POST (FASE H).
+    assert "post" in cuerpo["paths"]["/api/consultar-auto"]
+    assert "get" not in cuerpo["paths"]["/api/consultar-auto"]
 
 
 # --- FASE 2: diagnostico y validacion ----------------------------------------
@@ -98,11 +106,11 @@ def test_listado_de_colecciones(api):
     assert codigo == 200
 
     resumen = {fila["coleccion_id"]: fila["fragmentos"] for fila in cuerpo}
-    # Las colecciones de demostracion deben aparecer con su tamano exacto;
-    # pueden coexistir otras (p. ej. `benchmark_2026` de la FASE 5), por lo
-    # que no se exige que el listado contenga unicamente estas dos.
-    assert resumen.get(COLECCION_FINANCIERO) == FRAGMENTOS_ESPERADOS
-    assert resumen.get(COLECCION_TRIBUTARIO) == FRAGMENTOS_ESPERADOS
+    # Las colecciones de demostracion deben aparecer con al menos su tamano
+    # semilla; desde la FASE 6 pueden contener ademas documentos reales, y
+    # pueden coexistir otras colecciones (p. ej. `benchmark_2026`).
+    assert resumen.get(COLECCION_FINANCIERO, 0) >= FRAGMENTOS_ESPERADOS
+    assert resumen.get(COLECCION_TRIBUTARIO, 0) >= FRAGMENTOS_ESPERADOS
 
 
 @pytest.mark.parametrize(
@@ -111,11 +119,10 @@ def test_listado_de_colecciones(api):
 def test_coleccion_valida_devuelve_su_tamano(api, coleccion):
     codigo, cuerpo = obtener(api, f"/api/colecciones/{coleccion}")
     assert codigo == 200
-    assert cuerpo == {
-        "coleccion_id": coleccion,
-        "existe": True,
-        "fragmentos": FRAGMENTOS_ESPERADOS,
-    }
+    assert cuerpo["coleccion_id"] == coleccion
+    assert cuerpo["existe"] is True
+    # El total puede crecer con documentos reales (FASE 6).
+    assert cuerpo["fragmentos"] >= FRAGMENTOS_ESPERADOS
 
 
 def test_coleccion_valida_inexistente(api):

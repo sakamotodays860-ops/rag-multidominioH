@@ -6,9 +6,13 @@ Requisito 5 del enunciado:
   para emitir vectores de 768 dimensiones (compatibles con ``VECTOR(768)``);
 * embeddings por LOTES vía ``:batchEmbedContents`` (maximo 100 solicitudes por
   llamada) en lugar de una llamada por chunk;
-* manejo de 429 / ``RESOURCE_EXHAUSTED`` con un numero FINITO de reintentos,
-  backoff exponencial progresivo con jitter y limite maximo;
-* errores definitivos registrados como :class:`ErrorEmbeddings`.
+* proteccion de cuota: un HTTP 429, un ``RESOURCE_EXHAUSTED`` (aunque venga en
+  el cuerpo de un HTTP 200) o un aviso explicito de cuota diaria agotada
+  **detienen la generacion de inmediato, sin reintentar**;
+* HTTP 500/502/503/504 conservan reintentos FINITOS con backoff exponencial
+  progresivo + jitter y limite maximo;
+* errores definitivos (incluido 400) registrados como :class:`ErrorEmbeddings`
+  conservando la causa original.
 
 Se usa HTTP plano con ``httpx`` en lugar del SDK ``google-genai``: solo se
 necesita un POST a un endpoint REST, con lo que la imagen no gana dependencias
@@ -29,8 +33,14 @@ _URL_EMBED = (
     "v1beta/models/{modelo}:batchEmbedContents"
 )
 
-# Codigos de estado que merecen reintento.
+# Codigos de estado que merecen reintento. Se conserva 429 por compatibilidad:
+# ``app.services.generacion`` reutiliza esta constante. En EMBEDDINGS el 429
+# NO se reintenta (proteccion de cuota); ver ``_RETRIABLES_EMBEDDINGS``.
 _RETRIABLES = frozenset({429, 500, 502, 503, 504})
+
+# Reintentos finitos permitidos SOLO para errores de servidor transitorios.
+# 429 y RESOURCE_EXHAUSTED quedan fuera: agotan cuota sin recargarla.
+_RETRIABLES_EMBEDDINGS = frozenset({500, 502, 503, 504})
 
 
 class ErrorEmbeddings(RuntimeError):
@@ -160,10 +170,32 @@ class ClienteEmbeddingsGemini:
             (respuesta.status_code, _es_limitacion_respuesta(cuerpo))
         )
 
-        if respuesta.status_code in _RETRIABLES or _es_limitacion_respuesta(cuerpo):
+        # Cuota diaria agotada: reintentar no ayuda y consume mas cuota. Se
+        # falla de inmediato con un error definitivo y comprensible.
+        if _es_cuota_diaria(cuerpo):
+            raise ErrorEmbeddings(
+                "La cuota diaria de Gemini esta agotada; no se reintenta. "
+                f"Detalle: {cuerpo[:200]}"
+            )
+
+        # Limite de cuota: HTTP 429 o ``RESOURCE_EXHAUSTED`` (tambien si aparece
+        # en el cuerpo de un HTTP 200). Reintentar gastaria cuota sin recargarla,
+        # asi que se detiene de inmediato conservando la causa original.
+        if respuesta.status_code == 429 or _es_limitacion_respuesta(cuerpo):
+            raise ErrorEmbeddings(
+                "Gemini devolvio limite de cuota "
+                f"(HTTP {respuesta.status_code}, rate limit 429/"
+                "RESOURCE_EXHAUSTED); no se reintenta. "
+                f"Detalle: {cuerpo[:300]}"
+            )
+
+        # Solo los errores de servidor transitorios (500/502/503/504) se
+        # reintentan, con el backoff finito ya configurado.
+        if respuesta.status_code in _RETRIABLES_EMBEDDINGS:
             raise _ReintentarReintentable(
                 f"HTTP {respuesta.status_code}: {cuerpo[:200]}",
                 _retry_after(respuesta),
+                respuesta.status_code,
             )
         if respuesta.status_code != 200:
             raise ErrorEmbeddings(
@@ -195,9 +227,17 @@ class ClienteEmbeddingsGemini:
 class _ReintentarReintentable(Exception):
     """Error transitorio que puede desaparecer tras esperar."""
 
-    def __init__(self, mensaje: str, retry_after_s: float | None = None) -> None:
+    def __init__(
+        self,
+        mensaje: str,
+        retry_after_s: float | None = None,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(mensaje)
         self.retry_after_s = retry_after_s
+        # Codigo HTTP original (si lo hay). Permite distinguir, tras agotar los
+        # reintentos, un error de servidor (5xx) de un limite de cuota (429).
+        self.status_code = status_code
 
     def __str__(self) -> str:
         base = super().__str__()
@@ -210,6 +250,29 @@ def _es_limitacion_respuesta(cuerpo: str) -> bool:
     """Detecta limitacion de cuota aunque el codigo HTTP no sea 429."""
     return "RESOURCE_EXHAUSTED" in cuerpo or "quota exceeded" in cuerpo.lower() or (
         "rate limit" in cuerpo.lower() and "429" in cuerpo
+    )
+
+
+def _es_cuota_diaria(cuerpo: str) -> bool:
+    """Detecta agotamiento de la cuota DIARIA (donde reintentar no ayuda).
+
+    Solo se activa ante indicios explicitos de limite diario. Un 429 generico
+    (``RESOURCE_EXHAUSTED`` sin mas) tambien detiene la generacion, pero lo
+    maneja la comprobacion de limite de cuota en ``_embed_intento``.
+    """
+    texto = cuerpo.lower()
+    return any(
+        marca in texto
+        for marca in (
+            "per day",
+            "per-day",
+            "perday",
+            "daily limit",
+            "daily quota",
+            "por dia",
+            "por día",
+            "cuota diaria",
+        )
     )
 
 

@@ -31,3 +31,14 @@ greenlet==3.5.6
 
 # --- Cliente HTTP asincrono (FASE 3: scraping + Gemini) ---
 httpx==0.28.1
+
+# --- Extraccion de texto de PDF (fase C: documentos normativos) ---
+# Python puro y compatible con 3.12; no requiere binarios del sistema.
+pypdf==5.1.0
+
+# --- Descifrado de PDF cifrados (fase C, FASE 3) ---
+# Muchos PDF normativos oficiales (Ley 393 de ASFI, Ley 2492 y Ley 843 de SIN)
+# estan cifrados con AES. pypdf los abre con contrasena vacia pero necesita el
+# backend `cryptography` (>=3.1) para descifrar los flujos de objetos; sin el,
+# la extraccion falla con pypdf.errors.DependencyError.
+cryptography==50.0.2

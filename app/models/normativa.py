@@ -60,6 +60,28 @@ class NormativaMatch(BaseModel):
     similitud: float
 
 
+class NormativaMatchLexico(BaseModel):
+    """Fila devuelta por la busqueda LEXICA (PostgreSQL nativo).
+
+    A diferencia de :class:`NormativaMatch` (busqueda vectorial), aqui NO hay
+    similitud coseno: `rank_fts` es la relevancia de ``ts_rank`` de PostgreSQL
+    y `terminos`/`coincidencia_exacta` describen cuantos terminos de la consulta
+    aparecen en el fragmento. `coleccion_id` se incluye para poder verificar el
+    aislamiento igual que en la busqueda vectorial.
+    """
+
+    id: int
+    coleccion_id: str
+    contenido: str
+    origen_url: str | None = None
+    # Relevancia textual de PostgreSQL (NO es una similitud vectorial).
+    rank_fts: float
+    # Numero de terminos de la consulta presentes en el fragmento.
+    terminos: int
+    # True si la frase exacta (p.ej. el numero de resolucion) aparece literal.
+    coincidencia_exacta: bool
+
+
 class ColeccionInfo(BaseModel):
     """Respuesta del endpoint de diagnostico de una coleccion."""
 

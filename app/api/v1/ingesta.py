@@ -14,9 +14,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.models.ingesta import PeticionIngesta, RespuestaIngesta
+from app.models.ingesta import (
+    PeticionIngesta,
+    RespuestaIngesta,
+    RespuestaPrevisualizacion,
+)
 from app.services.embeddings import ErrorEmbeddings
-from app.services.ingesta import ejecutar_ingesta
+from app.services.ingesta import ejecutar_ingesta, previsualizar_ingesta
 from app.utils.chunking import ConfiguracionChunkingError
 
 router = APIRouter(prefix="/api", tags=["ingesta"])
@@ -49,3 +53,24 @@ async def ingestar_web(peticion: PeticionIngesta) -> RespuestaIngesta:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except ErrorEmbeddings as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@router.post(
+    "/previsualizar-ingesta",
+    response_model=RespuestaPrevisualizacion,
+    status_code=200,
+    summary="Previsualiza la ingesta (scraping + chunking) sin Gemini ni BD",
+)
+async def previsualizar_web(peticion: PeticionIngesta) -> RespuestaPrevisualizacion:
+    """Previsualiza que se ingeriria, sin consumir cuota ni escribir en la BD.
+
+    Ejecuta scraping, limpieza y chunking, y devuelve conteos, documentos,
+    duplicados y una muestra de fragmentos. No llama a Gemini ni inserta filas:
+    sirve para revisar la calidad antes de autorizar la ingesta real.
+    """
+    try:
+        return await previsualizar_ingesta(peticion)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except ConfiguracionChunkingError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

@@ -85,16 +85,23 @@ async def test_insercion_estampa_el_coleccion_id_del_parametro(sesion):
 
 @pytest.mark.asyncio
 async def test_las_8_filas_de_fase_2_no_cambian_durante_la_insercion(sesion):
-    """Mientras hay filas pendientes, la base de demostracion sigue 4 + 4."""
-    assert await contar_coleccion(sesion, COLECCION_FINANCIERO) == FRAGMENTOS_ESPERADOS
-    assert await contar_coleccion(sesion, COLECCION_TRIBUTARIO) == FRAGMENTOS_ESPERADOS
+    """Mientras hay filas pendientes, las colecciones de demostracion no cambian.
+
+    Desde la FASE 6 las colecciones de demostracion pueden contener documentos
+    reales ademas de las 4 + 4 filas semilla; por eso se compara contra la
+    linea base capturada (no contra un total fijo).
+    """
+    antes_financiero = await contar_coleccion(sesion, COLECCION_FINANCIERO)
+    antes_tributario = await contar_coleccion(sesion, COLECCION_TRIBUTARIO)
+    assert antes_financiero >= FRAGMENTOS_ESPERADOS
+    assert antes_tributario >= FRAGMENTOS_ESPERADOS
 
     await insertar_fragmentos(
         sesion, coleccion_id=COLECCION_DE_PRUEBA, registros=REGISTROS
     )
 
-    assert await contar_coleccion(sesion, COLECCION_FINANCIERO) == FRAGMENTOS_ESPERADOS
-    assert await contar_coleccion(sesion, COLECCION_TRIBUTARIO) == FRAGMENTOS_ESPERADOS
+    assert await contar_coleccion(sesion, COLECCION_FINANCIERO) == antes_financiero
+    assert await contar_coleccion(sesion, COLECCION_TRIBUTARIO) == antes_tributario
 
     # La busqueda vectorial financiera sigue sin ver las filas de la prueba.
     financieros = await buscar_por_coleccion(
@@ -105,6 +112,7 @@ async def test_las_8_filas_de_fase_2_no_cambian_durante_la_insercion(sesion):
         match_count=100,
     )
     assert {f.coleccion_id for f in financieros} == {COLECCION_FINANCIERO}
+    assert COLECCION_DE_PRUEBA not in {f.coleccion_id for f in financieros}
 
     await sesion.rollback()
 
@@ -141,5 +149,5 @@ async def test_tras_rollback_no_queda_rastro_en_doble_sesion(motor, sesion):
     async with factoria() as sesion_nueva:
         conteos = await _conteos_por_coleccion(sesion_nueva)
     assert COLECCION_DE_PRUEBA not in conteos
-    assert conteos.get(COLECCION_FINANCIERO) == FRAGMENTOS_ESPERADOS
-    assert conteos.get(COLECCION_TRIBUTARIO) == FRAGMENTOS_ESPERADOS
+    assert conteos.get(COLECCION_FINANCIERO, 0) >= FRAGMENTOS_ESPERADOS
+    assert conteos.get(COLECCION_TRIBUTARIO, 0) >= FRAGMENTOS_ESPERADOS

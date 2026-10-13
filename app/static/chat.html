@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chat RAG Multi-Dominio</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-2: #273449;
+      --acento: #38bdf8;
+      --texto: #e2e8f0;
+      --texto-suave: #94a3b8;
+      --borde: #334155;
+      --usuario: #2563eb;
+      --ia: #1e293b;
+      --error: #f87171;
+      --aviso: #fbbf24;
+      --ok: #22c55e;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--texto);
+      font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    header.cabecera {
+      padding: 16px 20px;
+      background: linear-gradient(135deg, #0ea5e9, #2563eb);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+    }
+
+    header.cabecera h1 { margin: 0; font-size: 1.25rem; letter-spacing: .3px; }
+    header.cabecera p { margin: 0; font-size: .82rem; opacity: .9; }
+
+    .barra {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--borde);
+      flex-wrap: wrap;
+    }
+
+    .barra label { font-size: .85rem; color: var(--texto-suave); }
+
+    .barra select {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--borde);
+      background: var(--panel-2);
+      color: var(--texto);
+      font-size: .9rem;
+    }
+
+    #coleccion-manual { flex: 1 1 200px; min-width: 170px; }
+
+    .bascula {
+      font-size: .74rem;
+      color: var(--texto-suave);
+      padding: 6px 20px 0;
+    }
+
+    .conversacion {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .mensaje {
+      max-width: 84%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      line-height: 1.45;
+      font-size: .94rem;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .mensaje.usuario {
+      align-self: flex-end;
+      background: var(--usuario);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .mensaje.ia {
+      align-self: flex-start;
+      background: var(--ia);
+      border: 1px solid var(--borde);
+      border-bottom-left-radius: 4px;
+      width: 84%;
+    }
+
+    .mensaje.sistema {
+      align-self: center;
+      background: transparent;
+      color: var(--texto-suave);
+      font-size: .82rem;
+      text-align: center;
+      max-width: 100%;
+    }
+
+    .mensaje.error {
+      align-self: flex-start;
+      background: rgba(248, 113, 113, .12);
+      border: 1px solid var(--error);
+      color: #fecaca;
+    }
+
+    .mensaje.aviso {
+      align-self: flex-start;
+      background: rgba(251, 191, 36, .12);
+      border: 1px solid var(--aviso);
+      color: #fde68a;
+    }
+
+    .etiqueta-dominio {
+      display: inline-block;
+      font-size: .72rem;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+      background: rgba(56, 189, 248, .15);
+      color: var(--acento);
+      border: 1px solid var(--acento);
+    }
+
+    .aviso-interno {
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: .8rem;
+      background: rgba(251, 191, 36, .12);
+      border: 1px solid var(--aviso);
+      color: #fde68a;
+    }
+
+    .evidencias {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .evidencias h3 {
+      margin: 0 0 2px;
+      font-size: .82rem;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--acento);
+    }
+
+    .evidencia {
+      background: var(--panel-2);
+      border: 1px solid var(--borde);
+      border-left: 3px solid var(--acento);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: .86rem;
+    }
+
+    .evidencia.prueba { border-left-color: var(--aviso); }
+
+    .evidencia .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: .76rem;
+      color: var(--texto-suave);
+    }
+
+    .evidencia .meta .origen {
+      color: var(--acento);
+      text-decoration: none;
+      word-break: break-all;
+    }
+
+    .evidencia .meta .flag-prueba {
+      color: var(--aviso);
+      font-weight: 700;
+    }
+
+    .evidencia .contenido {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .cargando {
+      align-self: flex-start;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--texto-suave);
+      font-size: .88rem;
+      padding: 10px 14px;
+    }
+
+    .spinner {
+      width: 18px; height: 18px;
+      border: 3px solid var(--borde);
+      border-top-color: var(--acento);
+      border-radius: 50%;
+      animation: girar .8s linear infinite;
+    }
+
+    @keyframes girar { to { transform: rotate(360deg); } }
+
+    .pie {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-top: 1px solid var(--borde);
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .pie textarea {
+      flex: 1;
+      resize: none;
+      min-height: 48px;
+      max-height: 160px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--borde);
+      background: var(--panel-2);
+      color: var(--texto);
+      font-size: .94rem;
+      font-family: inherit;
+      line-height: 1.4;
+    }
+
+    .pie textarea:focus { outline: none; border-color: var(--acento); }
+
+    .pie button {
+      height: 48px;
+      padding: 0 20px;
+      border: none;
+      border-radius: 12px;
+      background: var(--acento);
+      color: #04283a;
+      font-weight: 700;
+      font-size: .94rem;
+      cursor: pointer;
+      transition: background .15s ease, opacity .15s ease;
+      white-space: nowrap;
+    }
+
+    .pie button:hover:not(:disabled) { background: #7dd3fc; }
+    .pie button:disabled { opacity: .5; cursor: not-allowed; }
+
+    .ayuda { padding: 0 20px 10px; font-size: .74rem; color: var(--texto-suave); }
+
+    @media (max-width: 600px) {
+      header.cabecera h1 { font-size: 1.05rem; }
+      .mensaje, .mensaje.ia { max-width: 94%; width: auto; }
+      .pie { padding: 10px 12px; }
+      .pie button { padding: 0 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="cabecera">
+      <h1>Chat RAG Multi-Dominio</h1>
+      <p>Asistente de normativa financiera y tributaria de Bolivia</p>
+    </header>
+
+    <div class="barra">
+      <label for="selector-dominio">Dominio:</label>
+      <select id="selector-dominio" aria-label="Selecciona el dominio">
+        <option value="auto">Detecci&oacute;n autom&aacute;tica (recomendado)</option>
+        <option value="financiero">Financiero</option>
+        <option value="tributario">Tributario</option>
+      </select>
+      <label for="coleccion-manual">Colecci&oacute;n:</label>
+      <select id="coleccion-manual" aria-label="Colecci&oacute;n espec&iacute;fica (opcional)">
+        <option value="">Cargando colecciones&hellip;</option>
+      </select>
+    </div>
+    <div class="bascula" id="bascula"></div>
+
+    <main class="conversacion" id="conversacion" aria-live="polite">
+      <div class="mensaje sistema">
+        Escribe en lenguaje natural. El asistente detecta si tu pregunta es
+        financiera o tributaria y elige la colecci&oacute;n adecuada.
+      </div>
+    </main>
+
+    <div class="ayuda">Enter env&iacute;a &middot; Shift + Enter inserta un salto de l&iacute;nea</div>
+
+    <div class="pie">
+      <textarea id="entrada" rows="1" placeholder="Escribe tu pregunta sobre normativa&hellip;"
+        aria-label="Pregunta"></textarea>
+      <button id="boton-enviar" type="button">Enviar</button>
+    </div>
+  </div>
+
+  <script>
+    "use strict";
+
+    const conversacion = document.getElementById("conversacion");
+    const selectorDominio = document.getElementById("selector-dominio");
+    const selectorColeccion = document.getElementById("coleccion-manual");
+    const bascula = document.getElementById("bascula");
+    const entrada = document.getElementById("entrada");
+    const boton = document.getElementById("boton-enviar");
+
+    let colecciones = [];
+
+    function agregarMensaje(texto, clase) {
+      const div = document.createElement("div");
+      div.className = "mensaje " + clase;
+      div.textContent = texto;
+      conversacion.appendChild(div);
+      conversacion.scrollTop = conversacion.scrollHeight;
+      return div;
+    }
+
+    function agregarCargando() {
+      const div = document.createElement("div");
+      div.className = "cargando";
+      const spinner = document.createElement("div");
+      spinner.className = "spinner";
+      const texto = document.createElement("span");
+      texto.textContent = "Consultando la normativa\u2026";
+      div.appendChild(spinner);
+      div.appendChild(texto);
+      conversacion.appendChild(div);
+      conversacion.scrollTop = conversacion.scrollHeight;
+      return div;
+    }
+
+    function nombreDominio(dominio) {
+      if (dominio === "financiero") return "Financiero";
+      if (dominio === "tributario") return "Tributario";
+      return "Autom\u00e1tico";
+    }
+
+    function renderEvidencias(contendor, evidencias) {
+      const lista = Array.isArray(evidencias) ? evidencias : [];
+      if (lista.length === 0) {
+        const bloque = document.createElement("div");
+        bloque.className = "evidencias";
+        const titulo = document.createElement("h3");
+        titulo.textContent = "Evidencias";
+        const vacio = document.createElement("div");
+        vacio.style.color = "var(--texto-suave)";
+        vacio.style.fontSize = ".82rem";
+        vacio.textContent =
+          "No se recuperaron evidencias para esta pregunta en la colecci\u00f3n seleccionada.";
+        bloque.appendChild(titulo);
+        bloque.appendChild(vacio);
+        contendor.appendChild(bloque);
+        return;
+      }
+
+      const bloque = document.createElement("div");
+      bloque.className = "evidencias";
+      const titulo = document.createElement("h3");
+      titulo.textContent = "Evidencias (" + lista.length + ")";
+      bloque.appendChild(titulo);
+
+      lista.forEach(function (ev) {
+        const tarjeta = document.createElement("div");
+        tarjeta.className = "evidencia" + (ev.es_datos_prueba ? " prueba" : "");
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+
+        if (typeof ev.similitud === "number") {
+          const similitud = document.createElement("span");
+          similitud.textContent = "similitud: " + ev.similitud.toFixed(4);
+          meta.appendChild(similitud);
+        } else if (typeof ev.puntuacion_lexica === "number") {
+          const lexica = document.createElement("span");
+          lexica.textContent =
+            "relevancia lexical: " + ev.puntuacion_lexica.toFixed(4);
+          meta.appendChild(lexica);
+        }
+
+        if (ev.tipo_busqueda) {
+          const tipo = document.createElement("span");
+          tipo.textContent = "busqueda: " + ev.tipo_busqueda;
+          meta.appendChild(tipo);
+        }
+
+        if (ev.coincidencia_exacta) {
+          const exacta = document.createElement("span");
+          exacta.style.color = "var(--ok)";
+          exacta.textContent = "coincidencia exacta";
+          meta.appendChild(exacta);
+        }
+
+        if (typeof ev.pagina === "number") {
+          const pagina = document.createElement("span");
+          pagina.textContent = "pagina detectada: " + ev.pagina;
+          meta.appendChild(pagina);
+        }
+
+        if (ev.referencia) {
+          const ref = document.createElement("span");
+          ref.textContent = "referencia detectada: " + ev.referencia;
+          meta.appendChild(ref);
+        }
+
+        const origen = document.createElement("span");
+        if (ev.origen_url) {
+          const enlace = document.createElement("a");
+          enlace.className = "origen";
+          enlace.href = ev.origen_url;
+          enlace.target = "_blank";
+          enlace.rel = "noopener noreferrer";
+          enlace.textContent = ev.origen_url;
+          origen.textContent = "origen_url: ";
+          origen.appendChild(enlace);
+        } else {
+          origen.textContent = "origen_url: (no disponible)";
+        }
+        meta.appendChild(origen);
+
+        if (ev.es_datos_prueba) {
+          const flag = document.createElement("span");
+          flag.className = "flag-prueba";
+          flag.textContent = "DATOS DE PRUEBA";
+          meta.appendChild(flag);
+        }
+
+        const contenido = document.createElement("div");
+        contenido.className = "contenido";
+        contenido.textContent = ev.contenido || "(contenido vac\u00edo)";
+
+        tarjeta.appendChild(meta);
+        tarjeta.appendChild(contenido);
+        bloque.appendChild(tarjeta);
+      });
+
+      contendor.appendChild(bloque);
+    }
+
+    function renderRespuesta(datos) {
+      const contenedor = document.createElement("div");
+      contenedor.className = "mensaje ia";
+
+      const etiqueta = document.createElement("span");
+      etiqueta.className = "etiqueta-dominio";
+      const partes = ["dominio: " + nombreDominio(datos.dominio)];
+      if (datos.coleccion_id) partes.push("colecci\u00f3n: " + datos.coleccion_id);
+      etiqueta.textContent = partes.join(" \u00b7 ");
+      contenedor.appendChild(etiqueta);
+
+      if (datos.advertencia) {
+        const aviso = document.createElement("div");
+        aviso.className = "aviso-interno";
+        aviso.textContent = "\u26a0 " + datos.advertencia;
+        contenedor.appendChild(aviso);
+      }
+
+      if (datos.solo_recuperacion) {
+        const nota = document.createElement("div");
+        nota.className = "aviso-interno";
+        nota.textContent =
+          "Modo solo recuperaci\u00f3n: se muestran las fuentes recuperadas " +
+          "sin generar una respuesta con IA.";
+        contenedor.appendChild(nota);
+      }
+
+      const cuerpo = document.createElement("div");
+      cuerpo.textContent = datos.respuesta || "(sin respuesta)";
+      contenedor.appendChild(cuerpo);
+
+      if (datos.aclaracion) {
+        const acl = document.createElement("div");
+        acl.style.marginTop = "8px";
+        acl.style.fontSize = ".82rem";
+        acl.style.color = "var(--texto-suave)";
+        acl.textContent = "(Motivo: " + datos.aclaracion + ")";
+        contenedor.appendChild(acl);
+      }
+
+      renderEvidencias(contenedor, datos.evidencias);
+      conversacion.appendChild(contenedor);
+      conversacion.scrollTop = conversacion.scrollHeight;
+    }
+
+    function detalleDe(cuerpo) {
+      if (cuerpo && typeof cuerpo.detail === "string") return cuerpo.detail;
+      if (Array.isArray(cuerpo && cuerpo.detail)) {
+        return cuerpo.detail
+          .map(function (d) { return (d.loc || []).join(".") + ": " + d.msg; })
+          .join("; ");
+      }
+      return "Error desconocido";
+    }
+
+    function mensajeDeError(estado, detalle) {
+      const texto = String(detalle || "");
+      const cuota = estado === 429 ||
+        /429|cuota|quota|RESOURCE_EXHAUSTED|rate limit|limite de solicitudes/i.test(texto);
+      if (cuota) {
+        return "El proveedor de IA (Gemini) puede haber alcanzado su cuota o " +
+          "l\u00edmite de solicitudes. Intenta de nuevo m\u00e1s tarde o cuando " +
+          "se recupere la cuota. Detalle: " + texto;
+      }
+      if (estado === 400) return "Solicitud no v\u00e1lida (HTTP 400): " + texto;
+      if (estado === 422) return "Datos de la consulta no v\u00e1lidos (HTTP 422): " + texto;
+      if (estado === 503) {
+        return "El proveedor de IA (Gemini) no est\u00e1 disponible temporalmente " +
+          "(HTTP 503). El servicio no puede generar la respuesta ahora mismo; " +
+          "intenta de nuevo en unos minutos. Detalle: " + texto;
+      }
+      if (estado === 502) {
+        return "El proveedor de embeddings/generaci\u00f3n o la base de datos no " +
+          "est\u00e1 disponible (HTTP 502): " + texto;
+      }
+      if (estado >= 500) return "El backend devolvi\u00f3 un error (HTTP " + estado + "): " + texto;
+      return "Error HTTP " + estado + ": " + texto;
+    }
+
+    async function cargarColecciones() {
+      try {
+        const respuesta = await fetch("/api/colecciones", {
+          headers: { "Accept": "application/json" }
+        });
+        if (!respuesta.ok) throw new Error("HTTP " + respuesta.status);
+        colecciones = await respuesta.json();
+        selectorColeccion.innerHTML = "";
+
+        const ninguna = document.createElement("option");
+        ninguna.value = "";
+        ninguna.textContent = "(seg\u00fan el dominio)";
+        selectorColeccion.appendChild(ninguna);
+
+        if (!Array.isArray(colecciones) || colecciones.length === 0) {
+          return;
+        }
+        colecciones.forEach(function (col) {
+          const opcion = document.createElement("option");
+          opcion.value = col.coleccion_id;
+          const total = (typeof col.fragmentos === "number")
+            ? col.fragmentos + " frag." : "sin datos";
+          opcion.textContent = col.coleccion_id + " (" + total + ")";
+          selectorColeccion.appendChild(opcion);
+        });
+      } catch (error) {
+        selectorColeccion.innerHTML = "";
+        const opcion = document.createElement("option");
+        opcion.value = "";
+        opcion.textContent = "No se pudieron cargar las colecciones";
+        selectorColeccion.appendChild(opcion);
+        agregarMensaje(
+          "No se pudieron cargar las colecciones desde /api/colecciones: " +
+          error.message, "error");
+      }
+    }
+
+    function actualizarBascula() {
+      const dominio = selectorDominio.value;
+      const coleccion = selectorColeccion.value;
+      if (coleccion) {
+        bascula.textContent =
+          "Se consultar\u00e1 la colecci\u00f3n espec\u00edfica: " + coleccion;
+      } else if (dominio === "auto") {
+        bascula.textContent =
+          "El dominio se detectar\u00e1 autom\u00e1ticamente a partir de la pregunta.";
+      } else {
+        bascula.textContent =
+          "Se consultar\u00e1 el dominio: " + nombreDominio(dominio) + ".";
+      }
+    }
+
+    function conGenerar(cuerpo, generar) {
+      const copia = Object.assign({}, cuerpo);
+      copia.generar = generar;
+      return copia;
+    }
+
+    async function pedir(url, cuerpo) {
+      const respuesta = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify(cuerpo)
+      });
+      let datos = null;
+      try { datos = await respuesta.json(); } catch (e) { datos = null; }
+      return { ok: respuesta.ok, estado: respuesta.status, cuerpo: datos };
+    }
+
+    async function enviarConsulta() {
+      const pregunta = entrada.value.trim();
+      if (!pregunta) {
+        agregarMensaje("Escribe una pregunta antes de enviar.", "aviso");
+        return;
+      }
+
+      const dominio = selectorDominio.value;
+      const coleccion = selectorColeccion.value;
+
+      agregarMensaje(entrada.value, "usuario");
+      entrada.value = "";
+      entrada.style.height = "auto";
+      boton.disabled = true;
+      boton.textContent = "Enviando\u2026";
+      const cargando = agregarCargando();
+
+      let url, cuerpoPeticion;
+      if (coleccion) {
+        url = "/api/consultar";
+        cuerpoPeticion = { coleccion_id: coleccion, pregunta: pregunta };
+      } else {
+        url = "/api/consultar-auto";
+        cuerpoPeticion = { pregunta: pregunta };
+        if (dominio !== "auto") cuerpoPeticion.dominio = dominio;
+      }
+
+      try {
+        let resultado = await pedir(url, conGenerar(cuerpoPeticion, true));
+        let recuperacionForzada = false;
+
+        // Si el proveedor de IA no esta disponible (503), reintentamos en modo
+        // solo-recuperacion para no dejar al usuario sin fuentes verificables.
+        if (!resultado.ok && resultado.estado === 503) {
+          const alternativa = await pedir(url, conGenerar(cuerpoPeticion, false));
+          if (alternativa.ok) {
+            resultado = alternativa;
+            recuperacionForzada = true;
+          }
+        }
+        cargando.remove();
+
+        if (!resultado.ok) {
+          agregarMensaje(
+            mensajeDeError(resultado.estado, detalleDe(resultado.cuerpo)),
+            resultado.estado === 429 ? "aviso" : "error");
+          return;
+        }
+
+        let cuerpo = resultado.cuerpo;
+        if (cuerpo && cuerpo.coleccion_id && cuerpo.dominio === undefined) {
+          // Respuesta del endpoint manual (/api/consultar): adaptar formato.
+          cuerpo = {
+            respuesta: cuerpo.respuesta,
+            evidencias: cuerpo.evidencias,
+            total_evidencias: cuerpo.total_evidencias,
+            coleccion_id: cuerpo.coleccion_id,
+            dominio: null,
+            advertencia: null,
+            aclaracion: null,
+            solo_recuperacion: cuerpo.solo_recuperacion === true
+          };
+        }
+        renderRespuesta(cuerpo || {});
+        if (recuperacionForzada) {
+          agregarMensaje(
+            "El proveedor de IA no est\u00e1 disponible; se muestran solo las " +
+            "fuentes recuperadas, sin respuesta generada.", "aviso");
+        }
+      } catch (error) {
+        cargando.remove();
+        agregarMensaje(
+          "No se pudo conectar con el backend. Comprueba que el servicio " +
+          "est\u00e9 activo. Detalle: " + error.message, "error");
+      } finally {
+        boton.disabled = false;
+        boton.textContent = "Enviar";
+        entrada.focus();
+      }
+    }
+
+    boton.addEventListener("click", enviarConsulta);
+
+    entrada.addEventListener("keydown", function (evento) {
+      if (evento.key === "Enter" && !evento.shiftKey) {
+        evento.preventDefault();
+        if (!boton.disabled) enviarConsulta();
+      }
+    });
+
+    entrada.addEventListener("input", function () {
+      entrada.style.height = "auto";
+      entrada.style.height = Math.min(entrada.scrollHeight, 160) + "px";
+    });
+
+    selectorDominio.addEventListener("change", actualizarBascula);
+    selectorColeccion.addEventListener("change", actualizarBascula);
+
+    cargarColecciones().then(actualizarBascula);
+    actualizarBascula();
+  </script>
+</body>
+</html>
